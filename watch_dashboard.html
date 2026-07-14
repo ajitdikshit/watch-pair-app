@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>watch:// dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e0c;
+    --panel: #111611;
+    --line: #22291f;
+    --text: #d7ead0;
+    --dim: #6f8a66;
+    --amber: #e0a447;
+    --green: #6ee06e;
+    --red: #e05c5c;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 28px 28px;
+    background-position: -1px -1px;
+  }
+  #root { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  .topline { display:flex; align-items:baseline; justify-content:space-between; margin-bottom: 22px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+  .brand { font-family: var(--mono); font-size: 13px; letter-spacing: 0.12em; color: var(--dim); text-transform: uppercase; }
+  .brand b { color: var(--green); }
+  .clock { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+
+  .status-row { display:flex; gap: 10px; align-items:center; margin-bottom: 20px; flex-wrap: wrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex-shrink:0; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--red); }
+  .status-text { font-family: var(--mono); font-size: 12px; color: var(--dim); flex: 1; }
+
+  button {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 9px 16px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+  button:disabled { opacity: 0.35; cursor: default; }
+  button.primary { border-color: var(--green); color: var(--green); }
+  button.primary:hover:not(:disabled) { background: var(--green); color: #06140a; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 1px; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+  .cell { background: var(--panel); padding: 18px; }
+  .cell .label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
+  .cell .value { font-family: var(--mono); font-size: 26px; color: var(--text); line-height: 1; }
+  .cell .value .unit { font-size: 14px; color: var(--dim); margin-left: 4px; }
+  .cell .sub { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 6px; }
+
+  .section-title { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin: 28px 0 10px; display:flex; align-items:center; gap:8px; }
+  .section-title::after { content:''; flex:1; height:1px; background: var(--line); }
+
+  .log {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .log-row { padding: 8px 12px; border-bottom: 1px solid var(--line); display:flex; gap: 10px; }
+  .log-row:last-child { border-bottom: none; }
+  .log-time { color: var(--dim); flex-shrink: 0; width: 62px; }
+  .log-fields { color: var(--amber); flex-shrink: 0; }
+  .log-hex { color: var(--dim); word-break: break-all; }
+  .log-empty { padding: 24px 12px; color: var(--dim); text-align: center; }
+
+  .btn-row { display:flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+  a.footer-link { color: var(--dim); }
+  .footer { font-family: var(--mono); font-size: 10px; color: var(--dim); text-align:center; margin-top: 40px; letter-spacing: 0.06em; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const SERVICE_UUID = "0000e91a-0000-1000-8000-00805f9b34fb";
+
+function hex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(" ");
+}
+
+function buildTimeSyncPacket() {
+  const now = new Date();
+  const epoch = Math.floor(now.getTime() / 1000);
+  const offsetSeconds = -now.getTimezoneOffset() * 60;
+
+  const payload = new Uint8Array(9);
+  new DataView(payload.buffer).setInt32(0, epoch, true);
+  new DataView(payload.buffer).setInt32(4, offsetSeconds, true);
+  payload[8] = 0x00;
+
+  const header = new Uint8Array([0x00, 0x01, 0x00, 0x00, 0x01, 0x68, 0x00, 0x00, 0x09, 0x00]);
+  const packet = new Uint8Array(20);
+  packet.set(header, 0);
+  packet.set(payload, 10);
+  return packet;
+}
+
+function parseHeader(bytes) {
+  if (bytes.length < 10) return null;
+  return {
+    devType: bytes[1],
+    totalPage: bytes[2],
+    n: bytes[3],
+    cmd: bytes[4],
+    dataType: bytes[5],
+    len: bytes[8] | (bytes[9] << 8),
+  };
+}
+
+function App() {
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState(null);
+  const [battery, setBattery] = useState(null);
+  const [log, setLog] = useState([]);
+  const [clock, setClock] = useState(new Date());
+
+  const [coords, setCoords] = useState(null);
+  const [locError, setLocError] = useState(null);
+  const [weather, setWeather] = useState(null);
+  const [weatherError, setWeatherError] = useState(null);
+
+  const [motion, setMotion] = useState(null);
+  const [motionUpdatedAt, setMotionUpdatedAt] = useState(null);
+
+  const deviceRef = useRef(null);
+  const writeCharRef = useRef(null);
+
+  useEffect(() => {
+    const t = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const pushLog = useCallback((bytes) => {
+    const parsed = parseHeader(bytes);
+    setLog(prev => [{
+      time: new Date().toLocaleTimeString(),
+      fields: parsed
+        ? `dev=${parsed.devType} pg=${parsed.totalPage} n=${parsed.n} cmd=${parsed.cmd} type=${parsed.dataType} len=${parsed.len}`
+        : "(short packet)",
+      hexStr: hex(bytes),
+    }, ...prev].slice(0, 40));
+
+    if (parsed && parsed.dataType === 3 && bytes.length > 10) {
+      setBattery(bytes[10]);
+    }
+
+    // dataType 4 = REAL_SPORT, 5 = HISTORY_SPORT — both carry the same
+    // K6_Sport struct: [allItem:u16][itemCount:u8] then N x 20-byte items
+    // item = [starTime:u32][walkSteps:u32][distance:u24][calories:u24][duration:u24], all little-endian
+    if (parsed && (parsed.dataType === 4 || parsed.dataType === 5) && bytes.length >= 13) {
+      const data = bytes.slice(10);
+      const itemCount = data[2];
+      const items = [];
+      let offset = 3;
+      for (let i = 0; i < itemCount; i++) {
+        if (offset + 20 > data.length) break;
+        const item = data.slice(offset, offset + 20);
+        const dv = new DataView(item.buffer);
+        items.push({
+          starTime: dv.getUint32(0, true),
+          walkSteps: dv.getUint32(4, true),
+          distance: item[8] | (item[9] << 8) | (item[10] << 16),
+          calories: item[12] | (item[13] << 8) | (item[14] << 16),
+          duration: item[16] | (item[17] << 8) | (item[18] << 16),
+        });
+        offset += 20;
+      }
+      if (items.length > 0) {
+        setMotion(items[items.length - 1]);
+        setMotionUpdatedAt(new Date());
+      }
+    }
+  }, []);
+
+  const connect = async () => {
+    setError(null);
+    if (!navigator.bluetooth) {
+      setError("Web Bluetooth isn't available in this browser. Use Chrome on Android or desktop.");
+      return;
+    }
+    setConnecting(true);
+    try {
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE_UUID] }],
+      });
+      deviceRef.current = device;
+      device.addEventListener("gattserverdisconnected", () => setConnected(false));
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      const chars = await service.getCharacteristics();
+
+      let writeChar = null;
+      let notifyChar = null;
+      for (const c of chars) {
+        const p = c.properties;
+        const isPureNotify = p.notify && !p.write && !p.writeWithoutResponse && !p.read;
+        if (isPureNotify) {
+          if (!notifyChar) notifyChar = c;
+        } else {
+          if (!writeChar) writeChar = c;
+        }
+      }
+      if (!writeChar) throw new Error("No write characteristic found under the watch service.");
+      writeCharRef.current = writeChar;
+
+      if (notifyChar) {
+        await notifyChar.startNotifications();
+        notifyChar.addEventListener("characteristicvaluechanged", (ev) => {
+          const bytes = new Uint8Array(ev.target.value.buffer);
+          pushLog(bytes);
+        });
+      }
+
+      setConnected(true);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const disconnect = () => {
+    if (deviceRef.current && deviceRef.current.gatt.connected) {
+      deviceRef.current.gatt.disconnect();
+    }
+    setConnected(false);
+  };
+
+  const syncTime = async () => {
+    if (!writeCharRef.current) return;
+    try {
+      const packet = buildTimeSyncPacket();
+      await writeCharRef.current.writeValueWithoutResponse(packet);
+      pushLog(packet);
+    } catch (e) {
+      setError("Write failed: " + (e.message || e));
+    }
+  };
+
+  // --- Location + weather (phone's browser, not the watch) ---
+  const getLocation = () => {
+    setLocError(null);
+    if (!navigator.geolocation) {
+      setLocError("Geolocation not supported in this browser.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          setLocError("Location blocked. Tap the lock/site-info icon in Chrome's address bar → Permissions → Location → Allow, then try again.");
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          setLocError("Position unavailable — try again outdoors or with GPS/location services turned on.");
+        } else if (err.code === err.TIMEOUT) {
+          setLocError("Location request timed out. Try again.");
+        } else {
+          setLocError(err.message);
+        }
+      },
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  };
+
+  useEffect(() => {
+    if (!coords) return;
+    setWeatherError(null);
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m`)
+      .then(r => r.json())
+      .then(data => setWeather(data.current))
+      .catch(e => setWeatherError("Weather fetch failed: " + e.message));
+  }, [coords]);
+
+  const weatherCodeLabel = (code) => {
+    const map = { 0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast",
+      45: "fog", 51: "drizzle", 61: "rain", 71: "snow", 80: "showers", 95: "storm" };
+    return map[code] || `code ${code}`;
+  };
+
+  return (
+    <>
+      <div className="topline">
+        <div className="brand"><b>watch://</b> dashboard</div>
+        <div className="clock">{clock.toLocaleTimeString()}</div>
+      </div>
+
+      <div className="status-row">
+        <span className={`dot ${connected ? "on" : "off"}`}></span>
+        <span className="status-text">
+          {connected ? "connected — service 0000e91a" : connecting ? "connecting…" : "not connected"}
+        </span>
+        {!connected && <button className="primary" onClick={connect} disabled={connecting}>Connect watch</button>}
+        {connected && <button onClick={syncTime}>Sync time</button>}
+        {connected && <button onClick={disconnect}>Disconnect</button>}
+      </div>
+
+      {error && <div className="status-text" style={{color: "var(--red)", marginBottom: 16}}>{error}</div>}
+
+      <div className="grid">
+        <div className="cell">
+          <div className="label">Battery</div>
+          <div className="value">{battery !== null ? battery : "—"}<span className="unit">{battery !== null ? "%" : ""}</span></div>
+          <div className="sub">from watch, dataType 3</div>
+        </div>
+        <div className="cell">
+          <div className="label">Weather (phone location)</div>
+          <div className="value">
+            {weather ? `${Math.round(weather.temperature_2m)}` : "—"}
+            <span className="unit">{weather ? "°C" : ""}</span>
+          </div>
+          <div className="sub">{weather ? weatherCodeLabel(weather.weather_code) : weatherError || "tap below to fetch"}</div>
+        </div>
+        <div className="cell">
+          <div className="label">Location</div>
+          <div className="value" style={{fontSize: 15}}>
+            {coords ? `${coords.lat.toFixed(4)}, ${coords.lon.toFixed(4)}` : "—"}
+          </div>
+          <div className="sub">{locError || "browser geolocation"}</div>
+        </div>
+        <div className="cell">
+          <div className="label">Motion (watch, live)</div>
+          <div className="value">{motion ? motion.walkSteps : "—"}<span className="unit">{motion ? "steps" : ""}</span></div>
+          <div className="sub">
+            {motion
+              ? `${(motion.distance / 1000).toFixed(2)} km · ${motion.calories} kcal · ${motionUpdatedAt.toLocaleTimeString()}`
+              : "waiting for watch to push data — it isn't request-able, only pushed on its own schedule"}
+          </div>
+        </div>
+      </div>
+
+      <div className="btn-row">
+        <button onClick={getLocation}>Get location + weather</button>
+      </div>
+
+      <div className="section-title">Live packet log — watch → phone</div>
+      <div className="log">
+        {log.length === 0 && <div className="log-empty">nothing received yet — connect and interact with the watch</div>}
+        {log.map((row, i) => (
+          <div className="log-row" key={i}>
+            <span className="log-time">{row.time}</span>
+            <span className="log-fields">{row.fields}</span>
+            <span className="log-hex">{row.hexStr}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="footer">
+        no build step, no install — react + babel loaded from cdn, bluetooth + geolocation via browser APIs. motion data comes from the watch's own accelerometer, not the phone's.
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
