@@ -271,6 +271,86 @@ function App() {
     }
   };
 
+  // Best-effort WMO -> watch weather-icon code guess. The original app's
+  // vendor backend used its own code scheme we don't have documented, so
+  // this is a reasonable guess, not a confirmed mapping.
+  const wmoToWatchCode = (wmo) => {
+    if (wmo === 0) return 0;             // clear
+    if (wmo <= 2) return 1;              // partly cloudy
+    if (wmo === 3 || wmo === 45 || wmo === 48) return 2; // overcast/fog
+    if (wmo >= 51 && wmo <= 67) return 3; // rain/drizzle
+    if (wmo >= 71 && wmo <= 77) return 4; // snow
+    if (wmo >= 80 && wmo <= 82) return 3; // showers
+    if (wmo >= 95) return 5;             // storm
+    return 1;
+  };
+
+  const [dailyForecast, setDailyForecast] = useState(null);
+  const [pushStatus, setPushStatus] = useState(null);
+
+  useEffect(() => {
+    if (!coords) return;
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=3`)
+      .then(r => r.json())
+      .then(data => setDailyForecast(data.daily))
+      .catch(() => {});
+  }, [coords]);
+
+  const pushWeatherToWatch = async () => {
+    if (!writeCharRef.current) { setError("Connect the watch first."); return; }
+    if (!dailyForecast) { setError("No forecast data yet — fetch location + weather first."); return; }
+    setPushStatus("sending…");
+    try {
+      const days = Math.min(3, dailyForecast.time.length);
+      const payload = new Uint8Array(4 + 5 * days);
+      new DataView(payload.buffer).setUint32(0, Math.floor(Date.now() / 1000), true);
+      for (let d = 0; d < days; d++) {
+        const off = 4 + d * 5;
+        payload[off] = wmoToWatchCode(dailyForecast.weather_code[d]);
+        payload[off + 1] = Math.round(dailyForecast.temperature_2m_min[d]) & 0xff;
+        payload[off + 2] = Math.round(dailyForecast.temperature_2m_max[d]) & 0xff;
+        payload[off + 3] = 0; // pm1 - not available from this data source
+        payload[off + 4] = 0; // pm2 - not available from this data source
+      }
+
+      const len = payload.length;
+      const totalPage = len <= 10 ? 0 : Math.ceil((len - 10) / 19);
+
+      // header packet
+      const header = new Uint8Array(20);
+      header[0] = 0x00;
+      header[1] = 0x01;        // devType
+      header[2] = totalPage;
+      header[3] = 0x00;        // N
+      header[4] = 0x01;        // cmd
+      header[5] = 0x69;        // dataType 105 = weather
+      header[6] = 0x00; header[7] = 0x00;
+      header[8] = len & 0xff; header[9] = (len >> 8) & 0xff;
+      header.set(payload.slice(0, Math.min(10, len)), 10);
+
+      await writeCharRef.current.writeValueWithoutResponse(header);
+      pushLog(header);
+
+      // continuation packets, 19 payload bytes each, starting after the first 10
+      let offset = 10;
+      for (let page = 1; page <= totalPage; page++) {
+        const chunk = payload.slice(offset, offset + 19);
+        const cont = new Uint8Array(20);
+        cont[0] = page;
+        cont.set(chunk, 1);
+        await writeCharRef.current.writeValueWithoutResponse(cont);
+        pushLog(cont);
+        offset += 19;
+        await new Promise(r => setTimeout(r, 50)); // small gap between writes
+      }
+
+      setPushStatus(`sent (${days}-day forecast, ${totalPage + 1} packets)`);
+    } catch (e) {
+      setPushStatus(null);
+      setError("Weather push failed: " + (e.message || e));
+    }
+  };
+
   // --- Location + weather (phone's browser, not the watch) ---
   const getLocation = () => {
     setLocError(null);
@@ -363,7 +443,9 @@ function App() {
 
       <div className="btn-row">
         <button onClick={getLocation}>Get location + weather</button>
+        {connected && <button className="primary" onClick={pushWeatherToWatch}>Push weather to watch</button>}
       </div>
+      {pushStatus && <div className="status-text" style={{marginTop: 8}}>{pushStatus}</div>}
 
       <div className="section-title">Live packet log — watch → phone</div>
       <div className="log">
