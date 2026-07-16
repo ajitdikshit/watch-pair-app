@@ -131,6 +131,8 @@ async function sendAppHandshake(writeChar, pushLog) {
   await writeChar.writeValueWithoutResponse(enableGsPkt);
   pushLog(enableGsPkt);
 }
+
+function hex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(" ");
 }
 
