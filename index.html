@@ -106,7 +106,31 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 const SERVICE_UUID = "0000e91a-0000-1000-8000-00805f9b34fb";
 
-function hex(bytes) {
+function buildSimplePacket(cmd, dataType, payloadBytes) {
+  const payload = payloadBytes || new Uint8Array(0);
+  const header = new Uint8Array([
+    0x00, 0x01, 0x00, 0x00, cmd, dataType, 0x00, 0x00,
+    payload.length & 0xff, (payload.length >> 8) & 0xff,
+  ]);
+  const packet = new Uint8Array(20);
+  packet.set(header, 0);
+  packet.set(payload, 10);
+  return packet;
+}
+
+// The two calls JWear fires the instant it sees a successful connection,
+// before the user does anything: request device info, then flip the
+// "app is actively present" switch that unlocks continuous G-sensor push.
+async function sendAppHandshake(writeChar, pushLog) {
+  const getDevInfoPkt = buildSimplePacket(3, 0x02, null);        // cmd=3, dataType=2 (DEVINFO)
+  await writeChar.writeValueWithoutResponse(getDevInfoPkt);
+  pushLog(getDevInfoPkt);
+  await new Promise(r => setTimeout(r, 150));
+
+  const enableGsPkt = buildSimplePacket(1, 0x6d, new Uint8Array([0x01])); // cmd=1, dataType=109, payload=[1]
+  await writeChar.writeValueWithoutResponse(enableGsPkt);
+  pushLog(enableGsPkt);
+}
   return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(" ");
 }
 
@@ -246,6 +270,24 @@ function App() {
       }
 
       setConnected(true);
+      setPushStatus("connected — sending app handshake…");
+      try {
+        await sendAppHandshake(writeChar, pushLog);
+        setPushStatus("handshake sent (devInfo + enable G-sensor push)");
+      } catch (e) {
+        setPushStatus(null);
+        setError("Handshake failed: " + (e.message || e));
+      }
+
+      // Tell the watch "app is present" so it starts actively streaming
+      // real-time data (motion, etc.) instead of staying quiet.
+      // dataType 109 = DATA_TYPE_SET_DATA_SWITCH, payload [1] = enable.
+      const enablePacket = new Uint8Array([
+        0x00, 0x01, 0x00, 0x00, 0x01, 0x6d, 0x00, 0x00, 0x01, 0x00, 0x01,
+        0, 0, 0, 0, 0, 0, 0, 0, 0
+      ]);
+      await writeChar.writeValueWithoutResponse(enablePacket);
+      pushLog(enablePacket);
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -258,6 +300,20 @@ function App() {
       deviceRef.current.gatt.disconnect();
     }
     setConnected(false);
+  };
+
+  const setDataSwitch = async (enable) => {
+    if (!writeCharRef.current) return;
+    const packet = new Uint8Array([
+      0x00, 0x01, 0x00, 0x00, 0x01, 0x6d, 0x00, 0x00, 0x01, 0x00,
+      enable ? 1 : 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]);
+    try {
+      await writeCharRef.current.writeValueWithoutResponse(packet);
+      pushLog(packet);
+    } catch (e) {
+      setError("Write failed: " + (e.message || e));
+    }
   };
 
   const syncTime = async () => {
@@ -404,6 +460,12 @@ function App() {
         </span>
         {!connected && <button className="primary" onClick={connect} disabled={connecting}>Connect watch</button>}
         {connected && <button onClick={syncTime}>Sync time</button>}
+        {connected && <button onClick={async () => {
+          setPushStatus("resending handshake…");
+          try { await sendAppHandshake(writeCharRef.current, pushLog); setPushStatus("handshake sent"); }
+          catch (e) { setPushStatus(null); setError("Handshake failed: " + (e.message || e)); }
+        }}>Resend app handshake</button>}
+        {connected && <button onClick={() => setDataSwitch(true)}>Re-enable data stream</button>}
         {connected && <button onClick={disconnect}>Disconnect</button>}
       </div>
 
