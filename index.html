@@ -180,6 +180,7 @@ function App() {
 
   const [motion, setMotion] = useState(null);
   const [motionUpdatedAt, setMotionUpdatedAt] = useState(null);
+  const [devInfoDetected, setDevInfoDetected] = useState(null);
 
   const deviceRef = useRef(null);
   const writeCharRef = useRef(null);
@@ -201,6 +202,16 @@ function App() {
 
     if (parsed && parsed.dataType === 3 && bytes.length > 10) {
       setBattery(bytes[10]);
+    }
+
+    // dataType 2 = DEVINFO: 6-byte payload [items, customer_id, hardware_id, code_id, picture_id, font_id]
+    // customer_id is what JWear actually uses as the face-API "pid" (SharedPreferenceUtils.setPid(customer_id))
+    if (parsed && parsed.dataType === 2 && bytes.length >= 16) {
+      const customerId = bytes[11];
+      if (customerId > 0 && customerId < 255) {
+        setFacePid(String(customerId));
+        setDevInfoDetected(customerId);
+      }
     }
 
     // dataType 4 = REAL_SPORT, 5 = HISTORY_SPORT — both carry the same
@@ -449,11 +460,58 @@ function App() {
   const [selectedFace, setSelectedFace] = useState(null);
   const [faceDetail, setFaceDetail] = useState(null);
 
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authToken, setAuthToken] = useState(null);
+  const [authUserId, setAuthUserId] = useState(null);
+  const [authStatus, setAuthStatus] = useState(null);
+
+  const authHeaders = () => authToken
+    ? { token: authToken, userId: String(authUserId), appName: "YueFit", language: "en" }
+    : {};
+
+  const registerAccount = async () => {
+    setAuthStatus("registering…");
+    try {
+      const res = await fetch(`${faceApiBase}/user/registEmail.do?email=${encodeURIComponent(authEmail)}&password=${encodeURIComponent(authPassword)}`);
+      const data = await res.json();
+      if (data.code === 0 && data.result && data.result.token) {
+        setAuthToken(data.result.token);
+        setAuthUserId(data.result.userId);
+        setAuthStatus("registered + logged in");
+      } else {
+        setAuthStatus(`registration failed: ${JSON.stringify(data).slice(0, 200)}`);
+      }
+    } catch (e) {
+      setAuthStatus("registration request failed: " + (e.message || e));
+    }
+  };
+
+  const loginAccount = async () => {
+    setAuthStatus("logging in…");
+    try {
+      const res = await fetch(`${faceApiBase}/user/login.do?email=${encodeURIComponent(authEmail)}&password=${encodeURIComponent(authPassword)}`);
+      const data = await res.json();
+      if (data.code === 0 && data.result && data.result.token) {
+        setAuthToken(data.result.token);
+        setAuthUserId(data.result.userId);
+        setAuthStatus("logged in");
+      } else {
+        setAuthStatus(`login failed: ${JSON.stringify(data).slice(0, 200)}`);
+      }
+    } catch (e) {
+      setAuthStatus("login request failed: " + (e.message || e));
+    }
+  };
+
   const loadFaces = async () => {
     setFaceListError(null);
     setFaceList(null);
     try {
-      const res = await fetch(`${faceApiBase}/faceConfig.do?deviceId=${encodeURIComponent(facePid)}&pageIndex=1`);
+      const res = await fetch(
+        `${faceApiBase}/app/faceConfig.do?deviceId=${encodeURIComponent(facePid)}&pageIndex=1`,
+        { headers: authHeaders() }
+      );
       const data = await res.json();
       if (data.code !== 0 && !Array.isArray(data.result)) {
         setFaceListError(`API responded but with an error/empty result: ${JSON.stringify(data).slice(0, 200)}`);
@@ -471,7 +529,7 @@ function App() {
   const loadFaceDetail = async (binId) => {
     setFaceDetail(null);
     try {
-      const res = await fetch(`${faceApiBase}/faceDetail.do?binId=${encodeURIComponent(binId)}`);
+      const res = await fetch(`${faceApiBase}/app/faceDetail.do?binId=${encodeURIComponent(binId)}`, { headers: authHeaders() });
       const data = await res.json();
       setFaceDetail(data.result || null);
     } catch (e) {
@@ -549,6 +607,11 @@ function App() {
       {pushStatus && <div className="status-text" style={{marginTop: 8}}>{pushStatus}</div>}
 
       <div className="section-title">Watch faces (browse — via local proxy)</div>
+      {devInfoDetected && (
+        <div className="status-text" style={{marginBottom: 8}}>
+          detected pid from watch's DEVINFO response: <span style={{color: "var(--green)"}}>{devInfoDetected}</span> (auto-filled below)
+        </div>
+      )}
       <div className="btn-row" style={{alignItems: "center"}}>
         <input
           value={faceApiBase}
